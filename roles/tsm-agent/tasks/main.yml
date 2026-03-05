@@ -1,0 +1,321 @@
+---
+- name: Determine connection method
+  block:
+    - name: Set connection to SSH
+      set_fact:
+        ansible_connection: ssh
+
+    - name: Attempt to gather facts using SSH
+      setup:
+    - name: Set transport to SSH
+      set_fact:
+        transport: ssh
+
+  rescue:
+    - name: Set connection to WinRM
+      set_fact:
+        ansible_connection: winrm
+        ansible_winrm_transport: kerberos
+        ansible_winrm_service: HOST
+        ansible_winrm_server_cert_validation: ignore
+
+    - name: Reset connection to apply WinRM
+      meta: reset_connection
+
+    - name: Attempt to gather facts using WinRM
+      setup:
+    - name: Set transport to WinRM
+      set_fact:
+        transport: winrm
+
+  always:
+    - name: Ensure transport is set correctly
+      debug:
+        msg: "Transport is set to {{ transport }}"
+
+
+- name: Set variables for SU environment
+  set_fact:
+    proxy_host: squid.su.dk
+    proxy_port: 3128
+    https_proxy: 'squid.su.dk:3128'
+    http_proxy: 'squid.su.dk:3128'
+  when: environment == "SU" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Ensure rpm package is installed on RedHat and Oracle
+  package:
+    name: rpm
+    state: present
+  when: ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Ensure dpkg is installed on Ubuntu
+  package:
+    name: dpkg
+    state: present
+  when: ansible_os_family == 'Debian'
+
+- name: Check if TSM directory exists
+  stat:
+    path: /opt/tivoli/tsm
+  register: tsm_folder
+  when: ansible_os_family in ['RedHat', 'OracleLinux', 'Debian']
+
+- name: Check if /etc/oratab exists
+  stat:
+    path: /etc/oratab
+  register: oratab_file
+
+- name: Set the database variable to no-database
+  set_fact:
+    database: no-database
+
+- name: Set the database variable to oracle if /etc/oratab exists
+  set_fact:
+    database: oracle
+  when: oratab_file.stat.exists
+
+- name: Print the database var
+  ansible.builtin.debug:
+    msg:
+    - DB {{ database }}
+    - ansible_os_family {{ ansible_os_family }}
+
+- name: Check if Tivoli directory exists
+  win_stat:
+    path: 'C:\Program Files\Tivoli'
+  register: tsm_windows_folder
+  when: ansible_os_family == 'Windows'
+
+- name: Check if Microsoft SQL Server is installed
+  win_service:
+    name: 'MSSQL*'
+  register: mssql_service
+  when: ansible_os_family == 'Windows'
+
+- name: Set the database variable to mssql if SQL Server is installed
+  set_fact:
+    database: mssql
+  when: mssql_service is defined and mssql_service is succeeded and ansible_os_family == 'Windows'
+
+- name: Create temp directory on remote Windows server
+  win_file:
+    path: d:\Temp
+    state: directory
+  when: ansible_os_family == 'Windows'
+
+- name: Define package URLs for RedHat and Oracle
+  set_fact:
+    linux_package_urls:
+      - https://medialib.umit.dk/tsm/linux/gskcrypt64-8.0.55.31.linux.x86_64.rpm
+      - https://medialib.umit.dk/tsm/linux/gskssl64-8.0.55.31.linux.x86_64.rpm
+      - https://medialib.umit.dk/tsm/linux/TIVsm-API64.x86_64.rpm
+      - https://medialib.umit.dk/tsm/linux/TIVsm-BA.x86_64.rpm
+  when: ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Define package URLs for Ubuntu
+  set_fact:
+    debian_package_urls:
+      - https://medialib.umit.dk/tsm/ubuntu/gskssl64_8.0-55.31.linux.x86_64.deb
+      - https://medialib.umit.dk/tsm/ubuntu/gskcrypt64_8.0-55.31.linux.x86_64.deb
+      - https://medialib.umit.dk/tsm/ubuntu/tivsm-api64.amd64.deb
+      - https://medialib.umit.dk/tsm/ubuntu/tivsm-ba.amd64.deb
+  when: ansible_os_family == 'Debian'
+
+- name: Define package URLs for Windows
+  set_fact:
+    win_package_urls:
+      - https://medialib.umit.dk/tsm/windows/8.1.22.0-TIV-TSMBAC-WinX64.exe
+  when: ansible_os_family == 'Windows'
+
+- name: Define MS Sql Server package URLs for Windows
+  set_fact:
+    mssql_package_urls:
+      - https://medialib.umit.dk/tsm/msql/SP_DBS_8.1.21_DP_MS_SQL_ML.exe
+  when: database == "mssql" and ansible_os_family == "Windows"
+
+- name: Define Oracle Server package URLs for Linux
+  set_fact:
+    oracle_package_urls:
+      - https://medialib.umit.dk/tsm/oracle/TDP-Oracle.x86_64.bin
+  when: database == "oracle" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Download SQL Server Client if database is mssql
+  win_get_url:
+    url: "{{ item }}"
+    dest: "d:\\Temp{{ item | basename }}"
+  loop: "{{ mssql_package_urls }}"
+  when: database == "mssql" and ansible_os_family == "Windows"
+
+- name: Download TSM packages Windows
+  win_get_url:
+    url: "{{ item }}"
+    dest: "d:\\Temp"
+  loop: "{{ win_package_urls }}"
+  when: ansible_os_family == 'Windows'
+
+- name: Download packages Linux
+  get_url:
+    url: "{{ item }}"
+    dest: "/tmp/{{ item | basename }}"
+  loop: "{{ linux_package_urls }}"
+  when: ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Download packages Debian
+  get_url:
+    url: "{{ item }}"
+    dest: "/tmp/{{ item | basename }}"
+  loop: "{{ debian_package_urls }}"
+  when: ansible_os_family == 'Debian'
+
+- name: Download Oracle Server Client if database is oracle
+  get_url:
+    url: "{{ item }}"
+    dest: "/tmp/{{ item | basename }}"
+  loop: "{{ oracle_package_urls }}"
+  when: database == "oracle" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Execute the downloaded file
+  win_command: d:\Temp\8.1.22.0-TIV-TSMBAC-WinX64.exe
+  become: yes
+  become_method: runas
+  become_user: Administrator
+  args:
+    chdir: d:\Temp
+    creates: d:\Temp\TSMClient
+  when: ansible_os_family == 'Windows'
+
+- name: Execute spinstall.exe as Administrator
+  win_command: d:\Temp\TSMClient\spinstall.exe /s /v/qn
+  become: yes
+  become_method: runas
+  become_user: Administrator
+  args:
+    chdir: d:\Temp\TSMClient
+  when: ansible_os_family == 'Windows'
+
+- name: Execute SQL Server Client installer
+  win_command: d:\Temp\mssql-client.exe /silent /install
+  become: yes
+  become_method: runas
+  become_user: Administrator
+  args:
+    chdir: d:\Temp
+  when: database == "msql" and ansible_os_family == "Windows"
+
+- name: Make Oracle Client Executable
+  command: "chmod 775 /tmp/{{ item | basename }}"
+  loop: "{{ oracle_package_urls }}"
+  when: database == "oracle" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Remove TDPO software
+  ansible.builtin.shell: |
+    yum -y remove TDP-Oracle TDP-Oracle.Utility
+  ignore_errors: yes
+  when: database == "oracle" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Create a temporary file for InstallAnywhere
+  ansible.builtin.copy:
+    dest: /tmp/InstallAnywhere.in
+    content: |
+      # Mon Oct 28 14:28:06 CET 2024
+      # Replay feature output
+      # ---------------------
+      # This file was built by the Replay feature of InstallAnywhere.
+      # It contains variables that were set by Panels, Consoles or Custom Code.
+
+      #Indicate whether the license agreement been accepted
+      #----------------------------------------------------
+      LICENSE_ACCEPTED=TRUE
+
+      #Install
+      #-------
+      -fileOverwrite_/tmp/TDP-Oracle.paid.x86_64.rpm=Yes
+      -fileOverwrite_/tmp/TDP-Oracle.Utility-8.1.19-0.x86_64.rpm=Yes
+      -fileOverwrite_/opt/tivoli/tsm/client/oracle/_uninstall/uninstall.lax=Yes
+    when: ansible_os_family in ['RedHat', 'OracleLinux', 'Debian']
+
+- name: Install Oracle Client packages
+  ansible.builtin.shell: |
+    rm -f /var/.com.zerog.registry.xml
+    env JAVA_TOOL_OPTIONS='-Djdk.util.zip.disableZip64ExtraFieldValidation=true' /tmp/{{ item | basename }} -i silent  -f /tmp/InstallAnywhere.in
+  ignore_errors: yes
+  become: yes
+  #shell: "yum -y remove TDP-Oracle TDP-Oracle.Utility; rm -f /var/.com.zerog.registry.xml; env JAVA_TOOL_OPTIONS='-Djdk.util.zip.disableZip64ExtraFieldValidation=true' /tmp/{{ item | basename }} -i silent"
+  #shell: "env JAVA_TOOL_OPTIONS='-Djdk.util.zip.disableZip64ExtraFieldValidation=true' /tmp/{{ item | basename }}"
+  loop: "{{ oracle_package_urls }}"
+  when: database == "oracle" and ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Install packages if the folder doesn't exist (RedHat/Oracle)
+  command: "rpm -i /tmp/{{ item | basename }}"
+  loop: "{{ linux_package_urls }}"
+  when: (not tsm_folder.stat.exists) and (ansible_os_family in ['RedHat', 'OracleLinux'])
+
+- name: Upgrade packages if the folder exists (RedHat/Oracle)
+  command: "rpm -U --nodeps --replacepkgs /tmp/{{ item | basename }}"
+  loop: "{{ linux_package_urls }}"
+  when: tsm_folder.stat.exists and ansible_os_family in ['RedHat', 'OracleLinux']
+  register: result
+  failed_when: result.rc != 0 and "'is already installed' not in result.stdout"
+
+
+- name: Install packages if the folder doesn't exist (Ubuntu)
+  command: "dpkg -i /tmp/{{ item | basename }}"
+  loop: "{{ debian_package_urls }}"
+  when: not tsm_folder.stat.exists and ansible_os_family == 'Debian'
+
+- name: Upgrade packages if the folder exists (Ubuntu)
+  command: "dpkg -i /tmp/{{ item | basename }}"
+  loop: "{{ debian_package_urls }}"
+  when: tsm_folder.stat.exists and ansible_os_family == 'Debian'
+
+- name: Check if the dsmcad_file.service is running
+  ansible.builtin.systemd:
+    name: dsmcad_file.service
+    state: started
+  register: service_status
+  ignore_errors: true
+
+- name: Restart the dsmcad_file.service if it is running
+  ansible.builtin.systemd:
+    name: dsmcad_file.service
+    state: restarted
+  when: service_status.state == 'started'
+
+- name: Check if the dsmcad_ora.service is running
+  ansible.builtin.systemd:
+    name: dsmcad_ora.service
+    state: started
+  register: service_status
+  ignore_errors: true
+
+- name: Restart the dsmcad_ora.service if it is running
+  ansible.builtin.systemd:
+    name: dsmcad_ora.service
+    state: restarted
+  when: service_status.state == 'started' and ansible_os_family in ['RedHat', 'OracleLinux', 'Debian'] and database == 'oracle'
+
+- name: Clean up Debian downloaded packages
+  file:
+    path: "/tmp/{{ item | basename }}"
+    state: absent
+  loop: "{{ debian_package_urls }}"
+  when: ansible_os_family == 'Debian'
+
+- name: Clean up Linux downloaded packages
+  file:
+    path: "/tmp/{{ item | basename }}"
+    state: absent
+  loop: "{{ linux_package_urls }}"
+  when: ansible_os_family in ['RedHat', 'OracleLinux']
+
+- name: Remove the Windows executable file
+  win_file:
+    path: d:\Temp\8.1.22.0-TIV-TSMBAC-WinX64.exe
+    state: absent
+  when: ansible_os_family == 'Windows'
+
+- name: Remove the Windows TSMClient directory and contents
+  win_file:
+    path: d:\Temp\TSMClient
+    state: absent
+  when: ansible_os_family == 'Windows'
