@@ -2,6 +2,6 @@
 - name: Install TSM Agent
   hosts: all
   become: yes
-  gather_facts: yes
+  gather_facts: no
   roles:
     - role: tsm-agent
